@@ -28,8 +28,9 @@ display.
 # A running rats-search, straight into bitmagnet's database (keeps the file lists):
 ratsearch2bitmagnet 127.0.0.1:9306 --postgres postgresql://postgres:postgres@localhost:5432/bitmagnet
 
-# A dump, through bitmagnet's import endpoint:
-ratsearch2bitmagnet index.ratsdb --bitmagnet http://localhost:3333/import
+# A dump, through bitmagnet's import endpoint. No file lists travel this way, so bitmagnet cannot
+# tell the content types yet; --hints passes rats-search's instead (see "Only facts by default"):
+ratsearch2bitmagnet index.ratsdb --bitmagnet http://localhost:3333/import --hints
 
 # The data directory of a rats-search that is not running:
 ratsearch2bitmagnet "~/.local/share/Rats Search" --searchd /path/to/rats-search/searchd --postgres postgresql://...
@@ -61,8 +62,8 @@ tables.
 
 ## Destinations
 
-**`--bitmagnet URL`** posts batches to the `/import` endpoint. Each line carries what the endpoint
-accepts: infohash, name, size, published date, the `private` flag and a content-type hint. The
+**`--bitmagnet URL`** posts batches to the `/import` endpoint. Each line carries infohash, name,
+size, published date and the `private` flag, plus a content-type hint with `--hints`. The
 endpoint has no way to take file lists, so those are lost on this path. Batches share one
 `X-Import-Id`, requests are retried on connection errors and server errors, and the run stops on
 the first batch bitmagnet rejects.
@@ -74,8 +75,8 @@ crawler do, so the result is indistinguishable from torrents bitmagnet found its
 |---|---|
 | `torrents` | infohash, name, size, private, `files_status`, `files_count`; existing rows are kept, except that a row without file information gains it |
 | `torrent_files` | the file list, up to `--files-threshold` files (100, bitmagnet's own default); longer lists are marked `over_threshold` like the crawler does |
-| `torrent_sources`, `torrents_torrent_sources` | the source (`--source-name`, default `rats-search`), the rats-search "added" time as `published_at`, the import id, and seeder/leecher counts when rats-search had scraped a tracker (`--no-peers` leaves them out) |
-| `torrent_hints` | the content-type hint, never overwriting a hint that already points at a matched title |
+| `torrent_sources`, `torrents_torrent_sources` | the source (`--source-name`, default `rats-search`), the rats-search "added" time as `published_at` and the import id; with `--peers` also the seeder/leecher counts of rats-search's last tracker scrape |
+| `torrent_hints` | only with `--hints`: the content-type hint, never overwriting a hint that already points at a matched title |
 | `queue_jobs` | one `process_torrent` job per 100 new torrents, so bitmagnet classifies them and they show up in the UI (`--no-queue` skips this; `bitmagnet reprocess` does the same later) |
 
 bitmagnet must have run at least once against the database so its migrations exist. Rerunning an
@@ -93,26 +94,53 @@ import is safe: nothing is duplicated and nothing is queued twice.
 | `size` | `size` |
 | `added` | `publishedAt` / `published_at` |
 | `info.private` | `private` |
-| `contentType` / `contentCategory` | content-type hint, see below |
-| `seeders`, `leechers` (when `trackersChecked` is set) | source seeders/leechers (`--postgres` only) |
 | file list | `torrent_files` (`--postgres` only) |
+| `contentType` / `contentCategory` | nothing by default; a content-type hint with `--hints` |
+| `seeders`, `leechers` | nothing by default; source seeders/leechers with `--postgres --peers` |
 
-Hints are passed only where the rats-search classification maps onto one bitmagnet content type
-without guessing. Plain "video" or "audio" gets no hint, because it could be a movie or a show, an
-album or an audiobook, and bitmagnet's classifier is better placed to decide. `--no-hints` turns
-hints off altogether.
+Torrents rats-search classified as `bad` (its junk filter) are skipped unless `--keep-bad` is given.
 
-| rats-search 2.x | bitmagnet |
+### Only facts by default
+
+What is passed on by default is what the torrent itself says: its name, size, files and when it was
+found. What rats-search concluded from that stays behind, and bitmagnet works it out on its own.
+
+**Content types.** bitmagnet takes a hinted content type as final. It skips its own classifier for
+that torrent, and applies the hint again on every reprocess, so a wrong hint never corrects itself,
+while a torrent left unclassified can still be classified later. bitmagnet also tells apart what
+rats-search lumps together, and a wrong `xxx` hint deletes the torrent on an instance configured to
+drop adult content. This is what bitmagnet 0.10 made of the same six torrents, imported four ways:
+
+| torrent | `--postgres` | `--postgres --hints` | `--bitmagnet` | `--bitmagnet --hints` |
+|---|---|---|---|---|
+| a movie (`.mkv`) | `movie` | `movie` | none | `movie` |
+| a series episode (`.mkv`) | `tv_show` | `tv_show` | none | `tv_show` |
+| an album (`.flac`) | `music` | `music` | none | `music` |
+| an ebook (`.epub`) | `ebook` | `ebook` | none | `ebook` |
+| an audiobook (`.m4b`) | `audiobook` | `music` (wrong) | none | `music` (wrong) |
+| a comic (`.cbz`) | `comic` | `ebook` (wrong) | none | `ebook` (wrong) |
+
+So with `--postgres`, which sends the file lists, bitmagnet does better alone. Its classifier works
+from those file lists, though: over `--bitmagnet`, where none can be sent, a torrent gets no content
+type at all, not even a movie. It is still imported and found by name, and bitmagnet's crawler
+fetches the file list of such a torrent when it comes across it in the DHT. `--hints` is the way
+to have content types right away on that path, at the price of the mistakes above. It passes the
+rats-search classification where that maps onto one bitmagnet content type without guessing:
+
+| rats-search 2.x | hint with `--hints` |
 |---|---|
 | category movie / series / music / ebook / comics / software / game / xxx | `movie` / `tv_show` / `music` / `ebook` / `comic` / `software` / `game` / `xxx` |
 | type books / software / games (no category) | `ebook` / `software` / `game` |
 | type video / audio / pictures / archive, category documentary / anime | no hint |
 
 rats-search 1.x numbered its types differently (and knew only the `xxx` category); it maps to
-`ebook` (books), `software` (application) and `xxx`. The script tells the two numberings apart from
-the data, falls back to the ids both generations agree on when it cannot, and `--schema v2` /
-`--schema legacy` overrides the detection. Torrents rats-search classified as `bad` (its junk
-filter) are skipped unless `--keep-bad` is given.
+`ebook` (books), `software` (application) and `xxx`. The two numberings are told apart from the
+data, with a fallback to the ids both generations agree on, and `--schema v2` / `--schema legacy`
+overrides the detection.
+
+**Seeder and leecher counts.** These come from rats-search's last tracker scrape, which may be
+years old, and bitmagnet would store them under the date of the import. bitmagnet scrapes the
+torrents it meets itself. `--peers` copies the old counts when something is better than nothing.
 
 ## Progress
 
@@ -122,12 +150,12 @@ destination did with it. A summary closes the run, and names the option to resum
 or was interrupted.
 
 ```
-╭─ ratsearch2bitmagnet ─────────────────────────────────────────╮
-│        source  Manticore at 127.0.0.1:9306                    │
-│   destination  bitmagnet database bitmagnet on localhost:5432 │
-│ content hints  rats-search 2.x content types                  │
-│      torrents  9,375,298                                      │
-╰───────────────────────────────────────────────────────────────╯
+╭─ ratsearch2bitmagnet ──────────────────────────────────────────────╮
+│        source  Manticore at 127.0.0.1:9306                         │
+│   destination  bitmagnet database bitmagnet on localhost:5432      │
+│ content hints  off, bitmagnet classifies from names and file lists │
+│      torrents  9,375,298                                           │
+╰────────────────────────────────────────────────────────────────────╯
 Importing ━━━━━━━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━━━━  44% 4,127,000 / 9,375,298 5,214/s 0:13:11 eta 0:16:46
 written 4,126,120   skipped as bad 880   invalid infohash 0   new or completed rows 4,126,120
 file rows 9,481,007   classification jobs queued 41,262   last row id 4051120833716349511

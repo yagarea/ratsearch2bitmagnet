@@ -18,10 +18,14 @@ DEFAULT_FILES_THRESHOLD = 100
 class Options:
     source_name: str = DEFAULT_SOURCE_NAME
     import_id: str = ""
-    hints: bool = True
+    # Opt-in: bitmagnet takes a hinted type as final, skipping its own
+    # classifier for the torrent now and on every later reprocess.
+    hints: bool = False
     files: bool = True
     files_threshold: int = DEFAULT_FILES_THRESHOLD
-    peers: bool = True
+    # Opt-in: the counts are old tracker scrapes that bitmagnet would store
+    # under the import's timestamp.
+    peers: bool = False
     queue: bool = True
 
 

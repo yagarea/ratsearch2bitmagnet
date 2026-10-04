@@ -1,9 +1,9 @@
 """Sink: bitmagnet's PostgreSQL database.
 
 Writes what bitmagnet's importer and DHT crawler write (internal/importer,
-internal/dhtcrawler/persist.go): the torrent, its source row, a content-type
-hint, the file list, and a "process_torrent" queue job so the classifier
-picks the torrents up and they appear in the UI.
+internal/dhtcrawler/persist.go): the torrent, its source row, the file list,
+a content-type hint when asked to, and a "process_torrent" queue job so the
+classifier picks the torrents up and they appear in the UI.
 """
 
 from __future__ import annotations

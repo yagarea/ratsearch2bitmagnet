@@ -7,11 +7,15 @@ Sources (what is read, ``sources/``):
     ``sphinx.conf`` or starts a private ``searchd`` on the on-disk tables.
 
 Sinks (where it is written, ``sinks/``):
-  * bitmagnet's HTTP ``/import`` endpoint: names, sizes, dates and content-type
-    hints. The endpoint takes no file lists;
-  * bitmagnet's PostgreSQL database directly: everything above plus the file
-    lists, and a classification job per batch, as bitmagnet's own importer does;
+  * bitmagnet's HTTP ``/import`` endpoint: names, sizes and dates. The endpoint
+    takes no file lists;
+  * bitmagnet's PostgreSQL database directly: the same plus the file lists, and
+    a classification job per batch, as bitmagnet's own importer does;
   * JSON lines in the ``/import`` format, to a file or stdout.
+
+Only facts about a torrent are passed on by default. What rats-search made of
+it, its content type (``--hints``) and its last seeder counts (``--peers``), is
+opt-in: bitmagnet classifies and scrapes by itself.
 
 ``model`` holds the torrent entity and the content-type mapping, ``items`` the
 ``/import`` item format shared by the sinks, and ``cli`` the command line.

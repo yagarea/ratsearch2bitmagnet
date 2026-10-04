@@ -109,17 +109,21 @@ examples:
     content.add_argument("--source-name", default=DEFAULT_SOURCE_NAME,
                          help="torrent source key shown in bitmagnet (default: %(default)s)")
     content.add_argument("--import-id", help="import id recorded with each torrent (default: rats-search-<timestamp>)")
-    content.add_argument("--schema", choices=("auto", SCHEMA_V2, SCHEMA_LEGACY), default="auto",
-                         help="content-type numbering of the source: rats-search 2.x or 1.x (default: detect)")
-    content.add_argument("--no-hints", action="store_true", help="do not pass rats-search content types to bitmagnet")
     content.add_argument("--keep-bad", action="store_true", help="also import torrents rats-search classified as 'bad'")
     content.add_argument("--no-files", action="store_true", help="--postgres: do not store file lists")
     content.add_argument("--files-threshold", type=int, default=DEFAULT_FILES_THRESHOLD, metavar="N",
                          help="--postgres: keep at most N files per torrent, like bitmagnet's crawler "
                               "(default: %(default)s)")
-    content.add_argument("--no-peers", action="store_true", help="--postgres: do not copy seeder/leecher counts")
     content.add_argument("--no-queue", action="store_true",
                          help="--postgres: do not queue classification jobs (run 'bitmagnet reprocess' yourself)")
+    content.add_argument("--hints", action="store_true",
+                         help="pass rats-search's content types on; bitmagnet then takes them as final instead of "
+                              "classifying those torrents itself (default: bitmagnet decides)")
+    content.add_argument("--schema", choices=("auto", SCHEMA_V2, SCHEMA_LEGACY), default="auto",
+                         help="with --hints: content-type numbering of the source, rats-search 2.x or 1.x "
+                              "(default: detect)")
+    content.add_argument("--peers", action="store_true",
+                         help="--postgres: copy the seeder/leecher counts of rats-search's last tracker scrape")
 
     flow = parser.add_argument_group("batching and resuming")
     flow.add_argument("--batch-size", type=int, default=500, metavar="N",
@@ -163,13 +167,17 @@ def validate(args: argparse.Namespace) -> None:
         raise SystemExit("--source-name must not be empty")
 
 
-
 HINT_TEXT = {
     SCHEMA_V2: "rats-search 2.x content types",
     SCHEMA_LEGACY: "rats-search 1.x content types",
     SCHEMA_UNKNOWN: "numbering undetermined; only content types that rats-search 1.x and 2.x "
                     "number alike (--schema overrides)",
 }
+HINTS_OFF = "off, bitmagnet classifies from names and file lists"
+# bitmagnet's classifier works from the file list: a torrent that arrives
+# without one gets no content type at all, not even movie or tv_show.
+HINTS_OFF_NO_FILES = ("off, and no file lists reach bitmagnet this way: torrents stay untyped until its crawler "
+                      "finds them (--postgres sends the files, --hints rats-search's types)")
 
 
 def wants_live_display(args: argparse.Namespace) -> bool:
@@ -193,10 +201,10 @@ def run(args: argparse.Namespace, reporter: Reporter) -> int:
     opts = Options(
         source_name=args.source_name.strip(),
         import_id=args.import_id or f"rats-search-{int(time.time())}",
-        hints=not args.no_hints,
+        hints=args.hints,
         files=not args.no_files,
         files_threshold=args.files_threshold,
-        peers=not args.no_peers,
+        peers=args.peers,
         queue=not args.no_queue,
     )
     source: Source | None = None
@@ -226,7 +234,10 @@ def run(args: argparse.Namespace, reporter: Reporter) -> int:
     counters = Counters(last_id=args.after_id)
     outcome = Outcome()
     to_skip = args.skip
-    hints = HINT_TEXT[schema] if opts.hints else "off"
+    if opts.hints:
+        hints = HINT_TEXT[schema]
+    else:
+        hints = HINTS_OFF if args.postgres and opts.files else HINTS_OFF_NO_FILES
     reporter.begin(RunInfo(source.describe(), sink.describe(), hints, total, args.limit))
     try:
         try:

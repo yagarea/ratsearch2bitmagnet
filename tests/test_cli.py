@@ -46,11 +46,20 @@ def test_dump_to_split_files(tmp_path, dump, caplog):
              for line in p.read_text(encoding="utf-8").splitlines()]
     assert len(lines) == 1198  # one bad, one invalid hash
     assert lines[0] == {"source": "rats-search", "infoHash": "%040x" % 7920, "name": "Torrent 1", "size": 1001,
-                        "publishedAt": "2023-11-14T22:13:21Z", "contentType": "movie"}
-    assert lines[1]["contentType"] == "ebook"
+                        "publishedAt": "2023-11-14T22:13:21Z"}
+    assert not any("contentType" in line for line in lines)
     assert lines[2]["private"] is True and lines[3]["name"] == "ab"
     assert "1 classified 'bad' skipped" in caplog.text and "1 without a valid infohash" in caplog.text
     assert "truncated" not in caplog.text
+
+
+def test_hints_are_opt_in(dump, capsys, caplog):
+    assert cli.main([str(dump), "--limit", "2"]) == 0
+    assert "content-type hints: off, and no file lists reach bitmagnet this way" in caplog.text
+    assert cli.main([str(dump), "--limit", "2", "--hints"]) == 0
+    assert "content-type hints: rats-search 2.x content types" in caplog.text
+    plain, hinted = (json.loads(line) for line in capsys.readouterr().out.splitlines()[::2])
+    assert "contentType" not in plain and hinted["contentType"] == "movie"
 
 
 def test_truncated_dump_is_reported(dump, caplog):
