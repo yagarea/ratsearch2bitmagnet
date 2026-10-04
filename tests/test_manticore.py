@@ -30,6 +30,7 @@ def test_after_id_resumes_by_keyset(seeded):
     all_ids = [t.row_id for b in src.batches() for t in b]
     src.close()
     src = ManticoreSource("127.0.0.1", seeded["port"], batch_size=10, after_id=all_ids[2])
+    assert src.total_estimate() == len(all_ids) - 3
     assert [t.row_id for b in src.batches() for t in b] == all_ids[3:]
     src.close()
 

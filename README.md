@@ -18,9 +18,9 @@ uv run ratsearch2bitmagnet --help
 ```
 
 Or install it (`pip install .`, Python 3.10 or newer) and run `ratsearch2bitmagnet`, or
-`python -m ratsearch2bitmagnet`. The two drivers it may need, `pymysql` for Manticore and `psycopg`
-for PostgreSQL, come with it; reading a `.ratsdb` dump and writing JSON lines or posting to
-`/import` work without them.
+`python -m ratsearch2bitmagnet`. Its dependencies come with it and each is only loaded for the
+feature that needs it: `pymysql` for Manticore, `psycopg` for PostgreSQL, `rich` for the progress
+display.
 
 ## Quick start
 
@@ -114,11 +114,34 @@ the data, falls back to the ids both generations agree on when it cannot, and `-
 `--schema legacy` overrides the detection. Torrents rats-search classified as `bad` (its junk
 filter) are skipped unless `--keep-bad` is given.
 
+## Progress
+
+On a terminal the run is shown live: what is read and where it goes, a bar with the share done, the
+rate and the time left, and running counters for what was written, what was skipped and what the
+destination did with it. A summary closes the run, and names the option to resume with if it failed
+or was interrupted.
+
+```
+╭─ ratsearch2bitmagnet ─────────────────────────────────────────╮
+│        source  Manticore at 127.0.0.1:9306                    │
+│   destination  bitmagnet database bitmagnet on localhost:5432 │
+│ content hints  rats-search 2.x content types                  │
+│      torrents  9,375,298                                      │
+╰───────────────────────────────────────────────────────────────╯
+Importing ━━━━━━━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━━━━  44% 4,127,000 / 9,375,298 5,214/s 0:13:11 eta 0:16:46
+written 4,126,120   skipped as bad 880   invalid infohash 0   new or completed rows 4,126,120
+file rows 9,481,007   classification jobs queued 41,262   last row id 4051120833716349511
+```
+
+The display is drawn on stderr, so JSON lines on stdout can still be piped. Log lines replace it
+when stderr is not a terminal (cron, a log file), when the JSON lines go to the same terminal, with
+`-q`, and with `--no-progress`.
+
 ## Large imports
 
-Torrents are read in pages of `--batch-size` (500, at most 1000) and written per page. On failure
-the log names where to continue: `--after-id ID` for Manticore sources (keyset paging, no rescan)
-or `--skip N` for any source. `--limit N` stops after N torrents, which is handy for a trial run.
+Torrents are read in pages of `--batch-size` (500, at most 1000) and written per page. A run that
+stops names where to continue: `--after-id ID` for Manticore sources (keyset paging, no rescan)
+or `--skip N` for a dump. `--limit N` stops after N torrents, which is handy for a trial run.
 Expect bitmagnet's classification of millions of torrents to take a long time afterwards; the import
 itself is bound by how fast bitmagnet's database takes the rows.
 
@@ -132,10 +155,13 @@ The package is laid out by responsibility:
 | `items.py` | the `/import` item format and the import options every sink shares |
 | `sources/` | one module per input: `ratsdb.py` (dump), `manticore.py` (live index), `datadir.py` (data directory and the private `searchd`) |
 | `sinks/` | one module per output: `http_import.py`, `postgres.py`, `jsonl.py` |
-| `cli.py` | argument parsing, picking a source and a sink, the batch loop, resume hints and the final report |
+| `progress.py` | what a run reports (counters, outcome) and the plain reporter that logs it |
+| `progress_rich.py` | the live terminal display |
+| `cli.py` | argument parsing, picking a source, a sink and a reporter, the batch loop and the resume point |
 
 Sources yield torrent batches and know their content-type numbering; sinks take a batch, the
-numbering and the options. Adding an input or output means one new module and one line in `cli.py`.
+numbering and the options, and expose running counters; a reporter is told the counters after every
+written batch. Adding an input or output means one new module and one line in `cli.py`.
 
 ```sh
 uv sync

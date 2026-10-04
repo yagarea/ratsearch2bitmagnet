@@ -34,7 +34,7 @@ def test_postgres_sink(seeded, pg, caplog):
     args = ["127.0.0.1:%d" % seeded["port"], "--postgres", dsn, "--source-name", "rats-test",
             "--files-threshold", "100", "--import-id", "t1"]
     assert cli.main(args) == 0
-    assert "7 new or completed rows, 1 classification jobs queued" in caplog.text
+    assert "7 new or completed rows, 134 file rows, 1 classification jobs queued" in caplog.text
     info_hashes = [bytes.fromhex(h) for h in seeded["hashes"]]
     with conn.cursor() as cur:
         cur.execute("SELECT name, size, private, files_status::text, files_count, "
@@ -65,4 +65,4 @@ def test_postgres_sink(seeded, pg, caplog):
     # a second run changes nothing and queues nothing
     caplog.clear()
     assert cli.main(args + ["--import-id", "t2"]) == 0
-    assert "0 new or completed rows, 0 classification jobs queued" in caplog.text
+    assert "0 new or completed rows, 0 file rows, 0 classification jobs queued" in caplog.text

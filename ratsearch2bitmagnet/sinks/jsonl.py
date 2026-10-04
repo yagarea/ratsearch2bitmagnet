@@ -44,8 +44,14 @@ class JsonlSink:
             self.fh.write(dumps_item(import_item(t, schema, opts)) + "\n")
             self.in_part += 1
 
-    def summary(self) -> list[str]:
-        return []
+    def describe(self) -> str:
+        if not self.path:
+            return "JSON lines on stdout"
+        split = f", {self.split_size:,} per file" if self.split_size else ""
+        return f"JSON lines in {self.path}{split}"
+
+    def stats(self) -> dict[str, int]:
+        return {"output files": self.part} if self.path else {}
 
     def close(self) -> None:
         if self.fh and self.fh is not sys.stdout:

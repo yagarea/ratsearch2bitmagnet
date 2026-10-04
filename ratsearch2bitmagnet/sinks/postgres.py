@@ -112,7 +112,8 @@ class PostgresSink:
             missing = []
             for table in REQUIRED_TABLES:
                 cur.execute("SELECT to_regclass(%s)", (table,))
-                if cur.fetchone()[0] is None:
+                row = cur.fetchone()
+                if row is None or row[0] is None:
                     missing.append(table)
         self.conn.rollback()
         if missing:
@@ -120,6 +121,7 @@ class PostgresSink:
                              + " (start bitmagnet once so it runs its migrations)")
         self.source_ready = False
         self.inserted = 0
+        self.file_rows = 0
         self.queued = 0
 
     def ensure_source(self, opts: Options) -> None:
@@ -143,6 +145,7 @@ class PostgresSink:
         rows = list(unique.values())
         plans = {t.hash: files_for_bitmagnet(t, opts) for t in rows}
         hashes = [bytes.fromhex(t.hash) for t in rows]
+        queued = 0
         try:
             with self.conn.cursor() as cur:
                 cur.execute(SQL_TORRENTS, {
@@ -185,15 +188,22 @@ class PostgresSink:
                         payload, fingerprint = queue_job(ordered[i:i + QUEUE_JOB_CHUNK])
                         jobs.append((fingerprint, payload, now, now, QUEUE_JOB_PRIORITY))
                     cur.executemany(SQL_QUEUE, jobs)
-                    self.queued += len(jobs)
+                    queued = len(jobs)
             self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
         self.inserted += len(touched)
+        self.file_rows += len(file_rows)
+        self.queued += queued
 
-    def summary(self) -> list[str]:
-        return [f"{self.inserted:,} new or completed rows, {self.queued:,} classification jobs queued"]
+    def describe(self) -> str:
+        info = self.conn.info
+        return f"bitmagnet database {info.dbname} on {info.host}:{info.port}"
+
+    def stats(self) -> dict[str, int]:
+        return {"new or completed rows": self.inserted, "file rows": self.file_rows,
+                "classification jobs queued": self.queued}
 
     def close(self) -> None:
         with contextlib.suppress(Exception):

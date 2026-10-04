@@ -13,6 +13,7 @@ import time
 from . import __version__
 from .items import DEFAULT_FILES_THRESHOLD, DEFAULT_SOURCE_NAME, Options
 from .model import HASH_RE, SCHEMA_LEGACY, SCHEMA_UNKNOWN, SCHEMA_V2, is_bad
+from .progress import DONE, FAILED, INTERRUPTED, Counters, Outcome, Reporter, RunInfo, create_reporter
 from .sinks import Sink
 from .sinks.http_import import DEFAULT_BITMAGNET_URL, HttpSink
 from .sinks.jsonl import JsonlSink
@@ -142,6 +143,8 @@ examples:
 
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     parser.add_argument("-q", "--quiet", action="store_true", help="only warnings and errors")
+    parser.add_argument("--no-progress", action="store_true",
+                        help="plain log lines instead of the live progress display")
     return parser
 
 
@@ -160,7 +163,33 @@ def validate(args: argparse.Namespace) -> None:
         raise SystemExit("--source-name must not be empty")
 
 
-def run(args: argparse.Namespace) -> int:
+
+HINT_TEXT = {
+    SCHEMA_V2: "rats-search 2.x content types",
+    SCHEMA_LEGACY: "rats-search 1.x content types",
+    SCHEMA_UNKNOWN: "numbering undetermined; only content types that rats-search 1.x and 2.x "
+                    "number alike (--schema overrides)",
+}
+
+
+def wants_live_display(args: argparse.Namespace) -> bool:
+    if args.no_progress or args.quiet or not sys.stderr.isatty():
+        return False
+    # JSON lines printed to the same terminal would tear through the display.
+    to_stdout = not (args.bitmagnet or args.postgres or args.output)
+    return not (to_stdout and sys.stdout.isatty())
+
+
+def resume_options(counters: Counters, source: Source) -> str:
+    """Options that continue a stopped run; empty when nothing was written yet."""
+    if not counters.consumed:
+        return ""
+    if counters.last_id and source.supports_after_id:
+        return f"--after-id {counters.last_id}"
+    return f"--skip {counters.consumed}"
+
+
+def run(args: argparse.Namespace, reporter: Reporter) -> int:
     opts = Options(
         source_name=args.source_name.strip(),
         import_id=args.import_id or f"rats-search-{int(time.time())}",
@@ -170,26 +199,22 @@ def run(args: argparse.Namespace) -> int:
         peers=not args.no_peers,
         queue=not args.no_queue,
     )
+    source: Source | None = None
     try:
-        source = open_source(args)
+        with reporter.status("Opening the source"):
+            source = open_source(args)
+            total = source.total_estimate()
     except Exception as exc:  # noqa: BLE001 - reported, not propagated
+        if source is not None:
+            source.close()
         log.error("cannot open the source: %s", exc)
         return 1
     try:
         if args.after_id and not source.supports_after_id:
             raise SystemExit("--after-id only applies to Manticore and data directory sources")
         schema = args.schema if args.schema != "auto" else source.schema
-        log.info("reading %s", source.describe())
-        total = source.total_estimate()
-        if total:
-            log.info("about %s torrents in the source", f"{total:,}")
-        if opts.hints:
-            if schema == SCHEMA_UNKNOWN:
-                log.info("content-type numbering could not be determined; only hints valid for both "
-                         "rats-search 1.x and 2.x are passed on (use --schema to override)")
-            else:
-                log.info("content-type numbering: rats-search %s", "2.x" if schema == SCHEMA_V2 else "1.x")
-        sink = open_sink(args)
+        with reporter.status("Opening the destination"):
+            sink = open_sink(args)
     except SystemExit:
         source.close()
         raise
@@ -198,84 +223,76 @@ def run(args: argparse.Namespace) -> int:
         log.error("cannot open the destination: %s", exc)
         return 1
 
-    # `consumed` counts source torrents of fully written batches, so the
-    # resume hints after a failure name exactly where to continue.
-    processed = consumed = invalid = bad = 0
+    counters = Counters(last_id=args.after_id)
+    outcome = Outcome()
     to_skip = args.skip
-    last_id = args.after_id
-    started = time.monotonic()
-    last_report = started
+    hints = HINT_TEXT[schema] if opts.hints else "off"
+    reporter.begin(RunInfo(source.describe(), sink.describe(), hints, total, args.limit))
     try:
-        for batch in source.batches():
-            dropped = min(to_skip, len(batch))
-            to_skip -= dropped
-            items = []
-            for t in batch[dropped:]:
-                if not HASH_RE.match(t.hash):
-                    invalid += 1
-                    continue
-                if not args.keep_bad and is_bad(t):
-                    bad += 1
-                    continue
-                items.append(t)
-                if args.limit and processed + len(items) >= args.limit:
+        try:
+            for batch in source.batches():
+                dropped = min(to_skip, len(batch))
+                to_skip -= dropped
+                items = []
+                invalid = bad = 0
+                for t in batch[dropped:]:
+                    if not HASH_RE.match(t.hash):
+                        invalid += 1
+                        continue
+                    if not args.keep_bad and is_bad(t):
+                        bad += 1
+                        continue
+                    items.append(t)
+                    if args.limit and counters.written + len(items) >= args.limit:
+                        break
+                # Dump frames are 500 torrents regardless of --batch-size; split
+                # (never merge) so a page is fully written before it is counted.
+                for start in range(0, len(items), args.batch_size):
+                    sink.write(items[start:start + args.batch_size], schema, opts)
+                # Counted only now: after a failure the counters describe the
+                # last fully written batch, which is what resuming needs.
+                counters.written += len(items)
+                counters.consumed += len(batch)
+                counters.invalid += invalid
+                counters.bad += bad
+                if batch[-1].row_id:
+                    counters.last_id = batch[-1].row_id
+                reporter.update(counters, sink.stats())
+                if args.limit and counters.written >= args.limit:
                     break
-            # Dump frames are 500 torrents regardless of --batch-size; split
-            # (never merge) so a page is fully written before it counts as consumed.
-            for start in range(0, len(items), args.batch_size):
-                sink.write(items[start:start + args.batch_size], schema, opts)
-            processed += len(items)
-            consumed += len(batch)
-            if batch[-1].row_id:
-                last_id = batch[-1].row_id
-            now = time.monotonic()
-            if now - last_report >= 5 or log.isEnabledFor(logging.DEBUG):
-                last_report = now
-                rate = processed / max(now - started, 1e-6)
-                position = f"{consumed:,}" + (f" / {total:,}" if total else "")
-                log.info("%s torrents, %.0f/s%s", position, rate, f", last row id {last_id}" if last_id else "")
-            if args.limit and processed >= args.limit:
-                break
-    except KeyboardInterrupt:
-        log.error("interrupted after %s torrents%s", f"{consumed:,}", resume_hint(consumed, last_id, source))
+        except KeyboardInterrupt:
+            outcome = Outcome(INTERRUPTED, resume=resume_options(counters, source))
+        except Exception as exc:  # noqa: BLE001 - reported with the resume point
+            outcome = Outcome(FAILED, error=str(exc), resume=resume_options(counters, source))
+        finally:
+            source.close()
         sink.close()
-        return 130
-    except Exception as exc:
-        log.error("%s", exc)
-        log.error("failed after %s torrents%s", f"{consumed:,}", resume_hint(consumed, last_id, source))
-        sink.close()
-        return 1
+        if outcome.status == DONE:
+            outcome.notes = source.summary()
+        reporter.end(outcome, counters, sink.stats())
     finally:
-        source.close()
-    sink.close()
-
-    elapsed = time.monotonic() - started
-    summary = [f"{processed:,} torrents written in {elapsed:.0f}s"]
-    if invalid:
-        summary.append(f"{invalid:,} without a valid infohash skipped")
-    if bad:
-        summary.append(f"{bad:,} classified 'bad' skipped")
-    summary += sink.summary() + source.summary()
-    log.info("; ".join(summary))
-    return 0
-
-
-def resume_hint(count: int, last_id: int, source: Source) -> str:
-    if last_id and source.supports_after_id:
-        return f"; resume with --after-id {last_id} or --skip {count}"
-    return f"; resume with --skip {count}"
+        reporter.close()
+    return {DONE: 0, INTERRUPTED: 130, FAILED: 1}[outcome.status]
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    level = logging.DEBUG if args.verbose else logging.WARNING if args.quiet else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(message)s",
-                        datefmt="%H:%M:%S", stream=sys.stderr)
-    logging.getLogger(__package__).setLevel(level)
     validate(args)
+    level = logging.DEBUG if args.verbose else logging.WARNING if args.quiet else logging.INFO
+    reporter = create_reporter(live=wants_live_display(args))
+    handler = reporter.log_handler()
+    if handler is None:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
+    logging.basicConfig(level=level, handlers=[handler])
+    logging.getLogger(__package__).setLevel(level)
 
     def interrupt(*_: object) -> None:
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, interrupt)
-    return run(args)
+    try:
+        return run(args, reporter)
+    except KeyboardInterrupt:
+        log.error("interrupted")
+        return 130

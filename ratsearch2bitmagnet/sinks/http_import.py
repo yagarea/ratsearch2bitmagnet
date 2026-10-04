@@ -26,7 +26,8 @@ class HttpSink:
             self.path += "?" + parsed.query
         self.timeout = timeout
         self.retries = retries
-        self.sent = 0
+        self.requests = 0
+        self.retried = 0
 
     def _connection(self) -> http.client.HTTPConnection:
         cls = http.client.HTTPSConnection if self.parsed.scheme == "https" else http.client.HTTPConnection
@@ -40,6 +41,7 @@ class HttpSink:
             if attempt:
                 delay = min(2 ** attempt, 30)
                 log.warning("import request failed (%s); retrying in %ds", last_error, delay)
+                self.retried += 1
                 time.sleep(delay)
             conn = self._connection()
             try:
@@ -64,10 +66,15 @@ class HttpSink:
         reply = self.post(body, opts.import_id)
         if "import complete" not in reply:
             log.warning("unexpected reply from bitmagnet: %s", reply.strip()[:200])
-        self.sent += len(torrents)
+        self.requests += 1
 
-    def summary(self) -> list[str]:
-        return []
+    def describe(self) -> str:
+        # Rebuilt from its parts so credentials in the URL are not echoed.
+        port = f":{self.parsed.port}" if self.parsed.port else ""
+        return f"bitmagnet import endpoint {self.parsed.scheme}://{self.parsed.hostname}{port}{self.path}"
+
+    def stats(self) -> dict[str, int]:
+        return {"import requests": self.requests, "retries": self.retried}
 
     def close(self) -> None:
         pass

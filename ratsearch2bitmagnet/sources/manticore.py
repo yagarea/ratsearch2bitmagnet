@@ -72,7 +72,7 @@ class ManticoreSource:
         return f"Manticore at {self.host}:{self.port}"
 
     def total_estimate(self) -> int | None:
-        rows = self.query("SELECT COUNT(*) AS cnt FROM torrents")
+        rows = self.query(f"SELECT COUNT(*) AS cnt FROM torrents WHERE id > {self.after_id}")
         return to_int(rows[0]["cnt"]) if rows else None
 
     def detect_schema(self) -> str:
