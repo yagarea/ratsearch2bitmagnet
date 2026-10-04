@@ -1,0 +1,32 @@
+[project]
+name = "ratsearch2bitmagnet"
+version = "0.1.0"
+description = "Import a Rats Search (rats-search) torrent index into bitmagnet"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [
+    { name = "Jan Černý", email = "jc@ucw.cz" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pymysql>=1.1",
+    "psycopg[binary]>=3.1",
+]
+
+[project.scripts]
+ratsearch2bitmagnet = "ratsearch2bitmagnet.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["tests"]
