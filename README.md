@@ -3,11 +3,13 @@
 Moves the torrent index of [Rats Search](https://github.com/DEgITx/rats-search)
 into [bitmagnet](https://bitmagnet.io).
 
-| It reads | It writes |
-|---|---|
-| a `.ratsdb` dump exported by rats-search 2.x | bitmagnet's HTTP `/import` endpoint |
-| the Manticore Search behind a running rats-search (`host:port`) | bitmagnet's PostgreSQL database directly, file lists included |
-| a rats-search data directory (attaches to the running instance, or starts its own `searchd`) | JSON lines in the `/import` format, for `curl` |
+It reads one of
+
+- a `.ratsdb` dump exported by rats-search 2.x,
+- the Manticore Search behind a running rats-search (`host:port`),
+- a rats-search data directory (attaches to the running instance, or starts its own `searchd`),
+
+and writes to bitmagnet's HTTP `/import` endpoint, or JSON lines in the `/import` format for `curl`.
 
 ## Running it
 
@@ -19,21 +21,20 @@ uv run ratsearch2bitmagnet --help
 
 Or install it (`pip install .`, Python 3.10 or newer) and run `ratsearch2bitmagnet`, or
 `python -m ratsearch2bitmagnet`. Its dependencies come with it and each is only loaded for the
-feature that needs it: `pymysql` for Manticore, `psycopg` for PostgreSQL, `rich` for the progress
-display.
+feature that needs it: `pymysql` for Manticore, `rich` for the progress display.
 
 ## Quick start
 
 ```sh
-# A running rats-search, straight into bitmagnet's database (keeps the file lists):
-ratsearch2bitmagnet 127.0.0.1:9306 --postgres postgresql://postgres:postgres@localhost:5432/bitmagnet
+# A running rats-search, through bitmagnet's import endpoint:
+ratsearch2bitmagnet 127.0.0.1:9306 --bitmagnet http://localhost:3333/import
 
-# A dump, through bitmagnet's import endpoint. No file lists travel this way, so bitmagnet cannot
-# tell the content types yet; --hints passes rats-search's instead (see "Only facts by default"):
+# A dump. No file lists travel through the endpoint, so bitmagnet cannot tell the content types
+# yet; --hints passes rats-search's instead (see "Only facts by default"):
 ratsearch2bitmagnet index.ratsdb --bitmagnet http://localhost:3333/import --hints
 
-# The data directory of a rats-search that is not running:
-ratsearch2bitmagnet "~/.local/share/Rats Search" --searchd /path/to/rats-search/searchd --postgres postgresql://...
+# The data directory of a rats-search that is not running (--bitmagnet alone means localhost:3333):
+ratsearch2bitmagnet "~/.local/share/Rats Search" --searchd /path/to/rats-search/searchd --bitmagnet
 
 # JSON lines, the way the bitmagnet import guide pipes them:
 ratsearch2bitmagnet index.ratsdb | curl -H 'Content-Type: application/json' -H 'Connection: close' \
@@ -62,25 +63,12 @@ tables.
 
 ## Destinations
 
-**`--bitmagnet URL`** posts batches to the `/import` endpoint. Each line carries infohash, name,
-size, published date and the `private` flag, plus a content-type hint with `--hints`. The
-endpoint has no way to take file lists, so those are lost on this path. Batches share one
+**`--bitmagnet [URL]`** posts batches to the `/import` endpoint (`http://localhost:3333/import`
+when no URL is given). Each line carries infohash, name, size, published date and the `private`
+flag, plus a content-type hint with `--hints`, under the source `--source-name` (default
+`rats-search`). The endpoint has no way to take file lists, so those stay behind. Batches share one
 `X-Import-Id`, requests are retried on connection errors and server errors, and the run stops on
 the first batch bitmagnet rejects.
-
-**`--postgres DSN`** writes into bitmagnet's database the way bitmagnet's own importer and DHT
-crawler do, so the result is indistinguishable from torrents bitmagnet found itself:
-
-| bitmagnet table | what is written |
-|---|---|
-| `torrents` | infohash, name, size, private, `files_status`, `files_count`; existing rows are kept, except that a row without file information gains it |
-| `torrent_files` | the file list, up to `--files-threshold` files (100, bitmagnet's own default); longer lists are marked `over_threshold` like the crawler does |
-| `torrent_sources`, `torrents_torrent_sources` | the source (`--source-name`, default `rats-search`), the rats-search "added" time as `published_at` and the import id; with `--peers` also the seeder/leecher counts of rats-search's last tracker scrape |
-| `torrent_hints` | only with `--hints`: the content-type hint, never overwriting a hint that already points at a matched title |
-| `queue_jobs` | one `process_torrent` job per 100 new torrents, so bitmagnet classifies them and they show up in the UI (`--no-queue` skips this; `bitmagnet reprocess` does the same later) |
-
-bitmagnet must have run at least once against the database so its migrations exist. Rerunning an
-import is safe: nothing is duplicated and nothing is queued twice.
 
 **`--output FILE`** (or no destination at all, for stdout) writes the `/import` JSON lines;
 `--split-size N` starts a new file every N torrents.
@@ -92,40 +80,41 @@ import is safe: nothing is duplicated and nothing is queued twice.
 | `hash` | `infoHash` (lower-case hex; rows without a valid v1 infohash are skipped) |
 | `name` | `name` (NUL bytes removed) |
 | `size` | `size` |
-| `added` | `publishedAt` / `published_at` |
+| `added` | `publishedAt` |
 | `info.private` | `private` |
-| file list | `torrent_files` (`--postgres` only) |
+| file list | nothing; the endpoint takes none |
 | `contentType` / `contentCategory` | nothing by default; a content-type hint with `--hints` |
-| `seeders`, `leechers` | nothing by default; source seeders/leechers with `--postgres --peers` |
+| `seeders`, `leechers` | nothing |
 
 Torrents rats-search classified as `bad` (its junk filter) are skipped unless `--keep-bad` is given.
 
 ### Only facts by default
 
-What is passed on by default is what the torrent itself says: its name, size, files and when it was
-found. What rats-search concluded from that stays behind, and bitmagnet works it out on its own.
+What is passed on by default is what the torrent itself says: its name, size and when it was found. What rats-search concluded from that stays behind, and bitmagnet works it out on its own.
 
 **Content types.** bitmagnet takes a hinted content type as final. It skips its own classifier for
 that torrent, and applies the hint again on every reprocess, so a wrong hint never corrects itself,
 while a torrent left unclassified can still be classified later. bitmagnet also tells apart what
 rats-search lumps together, and a wrong `xxx` hint deletes the torrent on an instance configured to
-drop adult content. This is what bitmagnet 0.10 made of the same six torrents, imported four ways:
+drop adult content.
 
-| torrent | `--postgres` | `--postgres --hints` | `--bitmagnet` | `--bitmagnet --hints` |
-|---|---|---|---|---|
-| a movie (`.mkv`) | `movie` | `movie` | none | `movie` |
-| a series episode (`.mkv`) | `tv_show` | `tv_show` | none | `tv_show` |
-| an album (`.flac`) | `music` | `music` | none | `music` |
-| an ebook (`.epub`) | `ebook` | `ebook` | none | `ebook` |
-| an audiobook (`.m4b`) | `audiobook` | `music` (wrong) | none | `music` (wrong) |
-| a comic (`.cbz`) | `comic` | `ebook` (wrong) | none | `ebook` (wrong) |
+bitmagnet's classifier works from file lists, though, and the endpoint takes none: without hints, an
+imported torrent gets no content type at all, not even a movie. It is still imported and found by
+name, and bitmagnet's crawler fetches the file list of such a torrent when it comes across it in the
+DHT. `--hints` is the way to have content types right away, at the price of some mistakes. This is
+what bitmagnet 0.10 made of the same six torrents:
 
-So with `--postgres`, which sends the file lists, bitmagnet does better alone. Its classifier works
-from those file lists, though: over `--bitmagnet`, where none can be sent, a torrent gets no content
-type at all, not even a movie. It is still imported and found by name, and bitmagnet's crawler
-fetches the file list of such a torrent when it comes across it in the DHT. `--hints` is the way
-to have content types right away on that path, at the price of the mistakes above. It passes the
-rats-search classification where that maps onto one bitmagnet content type without guessing:
+| torrent | `--bitmagnet` | `--bitmagnet --hints` |
+|---|---|---|
+| a movie (`.mkv`) | none | `movie` |
+| a series episode (`.mkv`) | none | `tv_show` |
+| an album (`.flac`) | none | `music` |
+| an ebook (`.epub`) | none | `ebook` |
+| an audiobook (`.m4b`) | none | `music` (wrong) |
+| a comic (`.cbz`) | none | `ebook` (wrong) |
+
+`--hints` passes the rats-search classification where that maps onto one bitmagnet content type
+without guessing:
 
 | rats-search 2.x | hint with `--hints` |
 |---|---|
@@ -139,8 +128,7 @@ data, with a fallback to the ids both generations agree on, and `--schema v2` / 
 overrides the detection.
 
 **Seeder and leecher counts.** These come from rats-search's last tracker scrape, which may be
-years old, and bitmagnet would store them under the date of the import. bitmagnet scrapes the
-torrents it meets itself. `--peers` copies the old counts when something is better than nothing.
+years old, so they are not passed on. bitmagnet scrapes the torrents it meets itself.
 
 ## Progress
 
@@ -150,15 +138,15 @@ destination did with it. A summary closes the run, and names the option to resum
 or was interrupted.
 
 ```
-╭─ ratsearch2bitmagnet ──────────────────────────────────────────────╮
-│        source  Manticore at 127.0.0.1:9306                         │
-│   destination  bitmagnet database bitmagnet on localhost:5432      │
-│ content hints  off, bitmagnet classifies from names and file lists │
-│      torrents  9,375,298                                           │
-╰────────────────────────────────────────────────────────────────────╯
+╭─ ratsearch2bitmagnet ─────────────────────────────────────────────────╮
+│        source  Manticore at 127.0.0.1:9306                            │
+│   destination  bitmagnet import endpoint http://localhost:3333/import │
+│ content hints  rats-search 2.x content types                          │
+│      torrents  9,375,298                                              │
+╰───────────────────────────────────────────────────────────────────────╯
 Importing ━━━━━━━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━━━━  44% 4,127,000 / 9,375,298 5,214/s 0:13:11 eta 0:16:46
-written 4,126,120   skipped as bad 880   invalid infohash 0   new or completed rows 4,126,120
-file rows 9,481,007   classification jobs queued 41,262   last row id 4051120833716349511
+written 4,126,120   skipped as bad 880   invalid infohash 0   import requests 8,254   retries 0
+last row id 4051120833716349511
 ```
 
 The display is drawn on stderr, so JSON lines on stdout can still be piped. Log lines replace it
@@ -182,7 +170,7 @@ The package is laid out by responsibility:
 | `model.py` | the torrent entity, the two content-type numberings and how they map onto bitmagnet's types |
 | `items.py` | the `/import` item format and the import options every sink shares |
 | `sources/` | one module per input: `ratsdb.py` (dump), `manticore.py` (live index), `datadir.py` (data directory and the private `searchd`) |
-| `sinks/` | one module per output: `http_import.py`, `postgres.py`, `jsonl.py` |
+| `sinks/` | one module per output: `http_import.py`, `jsonl.py` |
 | `progress.py` | what a run reports (counters, outcome) and the plain reporter that logs it |
 | `progress_rich.py` | the live terminal display |
 | `cli.py` | argument parsing, picking a source, a sink and a reporter, the batch loop and the resume point |
@@ -197,9 +185,8 @@ uv run pytest
 ```
 
 Tests mirror the modules. The integration tests start a real `searchd` (found in a `rats-search`
-checkout next to the repo, or named by `RATSEARCH2BITMAGNET_TEST_SEARCHD`) and, when
-`RATSEARCH2BITMAGNET_TEST_PG` holds the DSN of a database bitmagnet has migrated, write to it and
-clean up after themselves. Without those they are skipped.
+checkout next to the repo, or named by `RATSEARCH2BITMAGNET_TEST_SEARCHD`); without one they are
+skipped.
 
 ## License
 

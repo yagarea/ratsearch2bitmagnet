@@ -4,7 +4,7 @@ import os
 import shutil
 
 from ratsearch2bitmagnet import cli
-from ratsearch2bitmagnet.model import SCHEMA_V2, File, hint_for
+from ratsearch2bitmagnet.model import SCHEMA_V2, hint_for
 from ratsearch2bitmagnet.sources.manticore import ManticoreSource
 
 
@@ -16,11 +16,8 @@ def test_manticore_source(seeded):
     by_name = {t.name: t for b in batches for t in b}
     assert set(by_name) == {"ubuntu.iso", "Some Movie (2019)", "Series S01", "Comics", "Bad thing",
                             "Umlaut ü 日本", "No files known", "stray"}
-    assert by_name["Some Movie (2019)"].private and by_name["Some Movie (2019)"].scraped
-    assert not by_name["Series S01"].scraped and len(by_name["Series S01"].file_list) == 30
-    assert by_name["Comics"].file_list[0] == File("Issue 001.cbz", 8)
-    assert by_name["stray"].file_list == [] and by_name["stray"].files == 1
-    assert by_name["No files known"].file_list == []
+    assert by_name["Some Movie (2019)"].private and not by_name["Series S01"].private
+    assert by_name["Umlaut ü 日本"].size == 123 and by_name["ubuntu.iso"].added == 1_700_000_000
     assert hint_for(by_name["Comics"], src.schema) == "comic"
     src.close()
 

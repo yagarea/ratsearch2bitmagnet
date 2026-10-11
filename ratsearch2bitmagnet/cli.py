@@ -11,13 +11,12 @@ import sys
 import time
 
 from . import __version__
-from .items import DEFAULT_FILES_THRESHOLD, DEFAULT_SOURCE_NAME, Options
+from .items import DEFAULT_SOURCE_NAME, Options
 from .model import HASH_RE, SCHEMA_LEGACY, SCHEMA_UNKNOWN, SCHEMA_V2, is_bad
 from .progress import DONE, FAILED, INTERRUPTED, Counters, Outcome, Reporter, RunInfo, create_reporter
 from .sinks import Sink
 from .sinks.http_import import DEFAULT_BITMAGNET_URL, HttpSink
 from .sinks.jsonl import JsonlSink
-from .sinks.postgres import PostgresSink
 from .sources import Source
 from .sources.datadir import DataDirSource, default_data_dir
 from .sources.manticore import DEFAULT_MANTICORE_PORT, MAX_BATCH_SIZE, ManticoreSource
@@ -64,13 +63,10 @@ def open_source(args: argparse.Namespace) -> Source:
 
 
 def open_sink(args: argparse.Namespace) -> Sink:
-    chosen = [name for name in ("bitmagnet", "postgres", "output") if getattr(args, name)]
-    if len(chosen) > 1:
-        raise SystemExit("choose one of --bitmagnet, --postgres or --output")
+    if args.bitmagnet and args.output:
+        raise SystemExit("choose --bitmagnet or --output, not both")
     if args.bitmagnet:
         return HttpSink(args.bitmagnet, args.http_timeout, args.retries)
-    if args.postgres:
-        return PostgresSink(args.postgres)
     return JsonlSink(args.output, args.split_size)
 
 
@@ -87,7 +83,7 @@ SOURCE is one of:
 
 examples:
   %(prog)s index.ratsdb --bitmagnet http://localhost:3333/import
-  %(prog)s 127.0.0.1:9306 --postgres postgresql://postgres:postgres@localhost:5432/bitmagnet
+  %(prog)s 127.0.0.1:9306 --bitmagnet --hints
   %(prog)s "~/.local/share/Rats Search" --searchd ./searchd --output rats.jsonl --split-size 100000
   %(prog)s index.ratsdb | curl -H 'Content-Type: application/json' --data-binary @- http://localhost:3333/import
 """)
@@ -99,9 +95,6 @@ examples:
     sink = parser.add_argument_group("destination (default: JSON lines on stdout)")
     sink.add_argument("--bitmagnet", metavar="URL", nargs="?", const=DEFAULT_BITMAGNET_URL,
                       help=f"POST to bitmagnet's /import endpoint (default URL: {DEFAULT_BITMAGNET_URL})")
-    sink.add_argument("--postgres", metavar="DSN",
-                      help="write straight into bitmagnet's PostgreSQL database, file lists included "
-                           "(e.g. postgresql://postgres:postgres@localhost:5432/bitmagnet)")
     sink.add_argument("-o", "--output", metavar="FILE", help="write JSON lines to FILE instead of stdout")
     sink.add_argument("--split-size", type=int, metavar="N", help="with --output: start a new file every N torrents")
 
@@ -110,20 +103,12 @@ examples:
                          help="torrent source key shown in bitmagnet (default: %(default)s)")
     content.add_argument("--import-id", help="import id recorded with each torrent (default: rats-search-<timestamp>)")
     content.add_argument("--keep-bad", action="store_true", help="also import torrents rats-search classified as 'bad'")
-    content.add_argument("--no-files", action="store_true", help="--postgres: do not store file lists")
-    content.add_argument("--files-threshold", type=int, default=DEFAULT_FILES_THRESHOLD, metavar="N",
-                         help="--postgres: keep at most N files per torrent, like bitmagnet's crawler "
-                              "(default: %(default)s)")
-    content.add_argument("--no-queue", action="store_true",
-                         help="--postgres: do not queue classification jobs (run 'bitmagnet reprocess' yourself)")
     content.add_argument("--hints", action="store_true",
                          help="pass rats-search's content types on; bitmagnet then takes them as final instead of "
                               "classifying those torrents itself (default: bitmagnet decides)")
     content.add_argument("--schema", choices=("auto", SCHEMA_V2, SCHEMA_LEGACY), default="auto",
                          help="with --hints: content-type numbering of the source, rats-search 2.x or 1.x "
                               "(default: detect)")
-    content.add_argument("--peers", action="store_true",
-                         help="--postgres: copy the seeder/leecher counts of rats-search's last tracker scrape")
 
     flow = parser.add_argument_group("batching and resuming")
     flow.add_argument("--batch-size", type=int, default=500, metavar="N",
@@ -159,8 +144,6 @@ def validate(args: argparse.Namespace) -> None:
         raise SystemExit("--split-size must be positive")
     if args.split_size and not args.output:
         raise SystemExit("--split-size needs --output")
-    if args.files_threshold < 0:
-        raise SystemExit("--files-threshold must not be negative")
     if args.skip < 0 or args.after_id < 0 or (args.limit is not None and args.limit < 1):
         raise SystemExit("--skip, --after-id must not be negative and --limit must be positive")
     if not args.source_name.strip():
@@ -173,18 +156,17 @@ HINT_TEXT = {
     SCHEMA_UNKNOWN: "numbering undetermined; only content types that rats-search 1.x and 2.x "
                     "number alike (--schema overrides)",
 }
-HINTS_OFF = "off, bitmagnet classifies from names and file lists"
 # bitmagnet's classifier works from the file list: a torrent that arrives
 # without one gets no content type at all, not even movie or tv_show.
-HINTS_OFF_NO_FILES = ("off, and no file lists reach bitmagnet this way: torrents stay untyped until its crawler "
-                      "finds them (--postgres sends the files, --hints rats-search's types)")
+HINTS_OFF = ("off, and /import takes no file lists: torrents stay untyped until bitmagnet's crawler "
+             "finds them (--hints passes rats-search's types)")
 
 
 def wants_live_display(args: argparse.Namespace) -> bool:
     if args.no_progress or args.quiet or not sys.stderr.isatty():
         return False
     # JSON lines printed to the same terminal would tear through the display.
-    to_stdout = not (args.bitmagnet or args.postgres or args.output)
+    to_stdout = not (args.bitmagnet or args.output)
     return not (to_stdout and sys.stdout.isatty())
 
 
@@ -202,10 +184,6 @@ def run(args: argparse.Namespace, reporter: Reporter) -> int:
         source_name=args.source_name.strip(),
         import_id=args.import_id or f"rats-search-{int(time.time())}",
         hints=args.hints,
-        files=not args.no_files,
-        files_threshold=args.files_threshold,
-        peers=args.peers,
-        queue=not args.no_queue,
     )
     source: Source | None = None
     try:
@@ -234,10 +212,7 @@ def run(args: argparse.Namespace, reporter: Reporter) -> int:
     counters = Counters(last_id=args.after_id)
     outcome = Outcome()
     to_skip = args.skip
-    if opts.hints:
-        hints = HINT_TEXT[schema]
-    else:
-        hints = HINTS_OFF if args.postgres and opts.files else HINTS_OFF_NO_FILES
+    hints = HINT_TEXT[schema] if opts.hints else HINTS_OFF
     reporter.begin(RunInfo(source.describe(), sink.describe(), hints, total, args.limit))
     try:
         try:

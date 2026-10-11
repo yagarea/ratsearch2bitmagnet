@@ -4,8 +4,6 @@ Schema shared by 1.x and 2.x (data/manticore.cpp, legacy/background/sphinx.js):
   torrents: id, hash, name, size, files, piecelength, added, contentType,
             contentCategory, seeders, leechers, completed, trackersChecked,
             good, bad, info (JSON)
-  files:    id (same as the torrent row), hash, path, size -- the last two are
-            "\\n"-joined blobs holding the whole file list
 Manticore lower-cases column names in result sets.
 """
 
@@ -21,7 +19,6 @@ from ..model import (
     SCHEMA_V2,
     Torrent,
     clean_text,
-    parse_file_blob,
     private_from_info,
     to_int,
 )
@@ -60,7 +57,6 @@ class ManticoreSource:
         tables = {clean_text(next(iter(r.values()))).lower() for r in self.query("SHOW TABLES")}
         if "torrents" not in tables:
             raise ValueError(f"Manticore at {host}:{port} has no 'torrents' table; not a rats-search database")
-        self.has_files = "files" in tables
         self.schema = self.detect_schema()
 
     def query(self, sql: str) -> list[dict]:
@@ -102,45 +98,23 @@ class ManticoreSource:
             hash=clean_text(row.get("hash")).lower(),
             name=clean_text(row.get("name")),
             size=to_int(row.get("size")),
-            files=to_int(row.get("files")),
             added=to_int(row.get("added")),
             content_type=to_int(row.get("contenttype")),
             content_category=to_int(row.get("contentcategory")),
-            seeders=to_int(row.get("seeders")),
-            leechers=to_int(row.get("leechers")),
-            scraped=to_int(row.get("trackerschecked")) > 0,
             private=private_from_info(row.get("info")),
             row_id=to_int(row.get("id")),
         )
 
     def batches(self) -> Iterator[list[Torrent]]:
         after = self.after_id
-        columns = ("id, hash, name, size, files, added, contenttype, contentcategory, "
-                   "seeders, leechers, trackerschecked, info")
+        columns = "id, hash, name, size, added, contenttype, contentcategory, info"
         while True:
             rows = self.query(f"SELECT {columns} FROM torrents WHERE id > {after} "
                               f"ORDER BY id ASC LIMIT {self.batch_size}")
             if not rows:
                 return
             after = to_int(rows[-1]["id"])
-            batch = [self.row_to_torrent(r) for r in rows]
-            if self.has_files:
-                self.attach_files(batch)
-            yield batch
-
-    def attach_files(self, batch: list[Torrent]) -> None:
-        # A files row carries its torrent's row id in both rats-search
-        # generations, and that is the only indexed way to reach it: a filter
-        # on `hash` scans the whole table. rats-search's own exporter looks the
-        # rows up the same way.
-        by_id = {t.row_id: t for t in batch if t.row_id}
-        if not by_id:
-            return
-        ids = ",".join(str(i) for i in by_id)
-        for row in self.query(f"SELECT id, hash, path, size FROM files WHERE id IN ({ids}) LIMIT {len(by_id)}"):
-            t = by_id.get(to_int(row.get("id")))
-            if t is not None and clean_text(row.get("hash")).lower() == t.hash:
-                t.file_list = parse_file_blob(clean_text(row.get("path")), clean_text(row.get("size")))
+            yield [self.row_to_torrent(r) for r in rows]
 
     def summary(self) -> list[str]:
         return []

@@ -1,14 +1,11 @@
-"""Fixtures: a synthetic dump, a fake /import server, a seeded searchd and a bitmagnet database.
+"""Fixtures: a synthetic dump, a fake /import server and a seeded searchd.
 
-The last two need real services and are skipped without them: searchd is the
-binary rats-search ships (found in a rats-search checkout next to this repo or
-given through RATSEARCH2BITMAGNET_TEST_SEARCHD); the database is the DSN in
-RATSEARCH2BITMAGNET_TEST_PG, which bitmagnet must have migrated.
+The searchd is the binary rats-search ships (found in a rats-search checkout
+next to this repo or given through RATSEARCH2BITMAGNET_TEST_SEARCHD); the tests
+that need it are skipped without one.
 """
 
 from __future__ import annotations
-
-import os
 
 import pytest
 from helpers import FakeImport, dump_torrent, searchd_binary, seed_database, write_dump
@@ -51,17 +48,3 @@ def seeded(tmp_path_factory):
     hashes = seed_database(proc.port)
     yield {"data_dir": str(data_dir), "port": proc.port, "hashes": hashes, "searchd": searchd}
     proc.close()
-
-
-@pytest.fixture
-def pg(seeded):
-    dsn = os.environ.get("RATSEARCH2BITMAGNET_TEST_PG")
-    if not dsn:
-        pytest.skip("no bitmagnet database (set RATSEARCH2BITMAGNET_TEST_PG)")
-    psycopg = pytest.importorskip("psycopg")
-    conn = psycopg.connect(dsn, autocommit=True)
-    yield dsn, conn
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM torrents WHERE info_hash = ANY(%s)", ([bytes.fromhex(h) for h in seeded["hashes"]],))
-        cur.execute("DELETE FROM queue_jobs WHERE payload::text LIKE %s", (f"%{seeded['hashes'][0]}%",))
-    conn.close()

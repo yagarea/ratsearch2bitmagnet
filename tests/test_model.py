@@ -35,13 +35,6 @@ def test_is_bad_in_both_numberings():
     assert not m.is_bad(make_torrent(content_type=7))
 
 
-def test_parse_file_blob():
-    assert m.parse_file_blob("a/b.mkv\nc.txt", "10\n20") == [m.File("a/b.mkv", 10), m.File("c.txt", 20)]
-    assert m.parse_file_blob("only", "") == [m.File("only", 0)]
-    assert m.parse_file_blob("a\nb", "5") == [m.File("a", 5), m.File("b", 0)]
-    assert m.parse_file_blob("", "") == []
-
-
 def test_clean_text_strips_nul_and_decodes_leniently():
     assert m.clean_text(b"ok\xff\x00x") == "ok�x"
     assert m.clean_text(None) == ""

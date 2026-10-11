@@ -20,7 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def make_torrent(**kw: Any) -> Torrent:
-    base: dict[str, Any] = dict(hash="0" * 39 + "1", name="Name", size=100, files=0, added=1_700_000_000)
+    base: dict[str, Any] = dict(hash="0" * 39 + "1", name="Name", size=100, added=1_700_000_000)
     base.update(kw)
     return Torrent(**base)
 
@@ -153,13 +153,11 @@ def seed_database(port: int) -> list[str]:
             if files:
                 cur.execute("INSERT INTO files (id, hash, path, size) VALUES (%s,%s,%s,%s)",
                             (row_id(h), h, "\n".join(p for p, _ in files), "\n".join(str(s) for _, s in files)))
-        # a files row under a foreign id is unreachable, like in rats-search itself
         h = hashlib.sha1(b"stray").hexdigest()
         hashes.append(h)
         cur.execute("INSERT INTO torrents (id, hash, name, nameIndex, size, files, added, contentType, "
                     "contentCategory, info) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (row_id(h), h, "stray", "stray", 50, 1, 1_700_000_100, 5, 0, "{}"))
-        cur.execute("INSERT INTO files (id, hash, path, size) VALUES (%s,%s,%s,%s)", (424242, h, "stray.bin", "50"))
         cur.execute("FLUSH RAMCHUNK torrents")
         cur.execute("FLUSH RAMCHUNK files")
     conn.close()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 HASH_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -42,26 +42,15 @@ SCHEMA_UNKNOWN = "unknown"
 
 
 @dataclass(slots=True)
-class File:
-    path: str
-    size: int
-
-
-@dataclass(slots=True)
 class Torrent:
     hash: str
     name: str
     size: int
-    files: int
     added: int  # unix seconds, 0 when unknown
     content_type: int = 0
     content_category: int = 0
-    seeders: int = 0
-    leechers: int = 0
-    scraped: bool = False  # seeders/leechers come from an actual tracker scrape
     private: bool = False
     row_id: int = 0
-    file_list: list[File] = field(default_factory=list)
 
 
 def content_names(t: Torrent, schema: str) -> tuple[str | None, str | None]:
@@ -107,16 +96,6 @@ def to_int(value: object, default: int = 0) -> int:
 
 def iso_utc(seconds: int) -> str:
     return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def parse_file_blob(paths: str, sizes: str) -> list[File]:
-    """Split the "\\n"-joined path/size blobs of a rats-search ``files`` row."""
-    if not paths:
-        return []
-    path_list = paths.split("\n")
-    size_list = sizes.split("\n") if sizes else []
-    return [File(path_list[i], to_int(size_list[i]) if i < len(size_list) else 0)
-            for i in range(len(path_list))]
 
 
 def private_from_info(info: object) -> bool:

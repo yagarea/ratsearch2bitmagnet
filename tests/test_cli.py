@@ -29,7 +29,7 @@ def test_detect_source_kind(tmp_path):
     ["x", "--split-size", "10"],
     ["x", "--limit", "0"],
     ["x", "--source-name", " "],
-    ["x", "--bitmagnet", "--postgres", "dsn"],
+    ["x", "--bitmagnet", "--output", "o.jsonl"],
 ])
 def test_rejected_arguments(argv, dump):
     argv[0] = str(dump)
@@ -55,7 +55,7 @@ def test_dump_to_split_files(tmp_path, dump, caplog):
 
 def test_hints_are_opt_in(dump, capsys, caplog):
     assert cli.main([str(dump), "--limit", "2"]) == 0
-    assert "content-type hints: off, and no file lists reach bitmagnet this way" in caplog.text
+    assert "content-type hints: off, and /import takes no file lists" in caplog.text
     assert cli.main([str(dump), "--limit", "2", "--hints"]) == 0
     assert "content-type hints: rats-search 2.x content types" in caplog.text
     plain, hinted = (json.loads(line) for line in capsys.readouterr().out.splitlines()[::2])

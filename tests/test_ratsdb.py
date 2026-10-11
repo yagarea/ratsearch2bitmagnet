@@ -1,6 +1,6 @@
 import pytest
 
-from ratsearch2bitmagnet.model import SCHEMA_V2, File, is_bad
+from ratsearch2bitmagnet.model import SCHEMA_V2, is_bad
 from ratsearch2bitmagnet.sources.ratsdb import RatsdbSource
 
 
@@ -13,11 +13,10 @@ def test_reader(dump):
     assert src.complete and not src.truncated and src.footer["torrents"] == 1200
     assert src.summary() == []
     t = batches[0]
-    assert t[0].hash == "%040x" % 7920 and t[0].content_category == 1 and t[0].scraped
-    assert t[0].file_list == [File("dir/file1.mkv", 901), File("readme.txt", 100)]
+    assert t[0].hash == "%040x" % 7920 and t[0].content_category == 1 and t[0].size == 1001
     assert t[1].content_type == 3 and t[1].content_category == 0
     assert is_bad(t[2])
-    assert t[4].private and t[4].added == src.fallback_added and t[4].files == 0
+    assert t[4].private and t[4].added == src.fallback_added
     assert t[5].name == "ab"
     src.close()
 

@@ -61,12 +61,12 @@ def test_log_reporter(caplog):
     reporter = LogReporter()
     reporter.interval = 0
     reporter.begin(INFO)
-    reporter.update(Counters(consumed=500, written=498, last_id=42), {"file rows": 9})
-    reporter.end(Outcome(notes=["a note"]), FINAL, {"file rows": 9})
+    reporter.update(Counters(consumed=500, written=498, last_id=42), {"import requests": 9})
+    reporter.end(Outcome(notes=["a note"]), FINAL, {"import requests": 9})
     assert "reading dump x.ratsdb" in caplog.text and "writing JSON lines in out.jsonl" in caplog.text
     assert "about 1,200 torrents to read" in caplog.text
     assert "500 / 1,200 torrents" in caplog.text and "last row id 42" in caplog.text
-    assert "1,198 torrents written" in caplog.text and "9 file rows; a note" in caplog.text
+    assert "1,198 torrents written" in caplog.text and "9 import requests; a note" in caplog.text
 
 
 def test_log_reporter_failure(caplog):
@@ -82,11 +82,11 @@ def test_log_reporter_failure(caplog):
 def test_rich_header_and_summary():
     reporter = RichReporter(recording())
     reporter.begin(INFO)
-    reporter.update(Counters(consumed=500, written=498), {"file rows": 4})
-    reporter.end(Outcome(notes=["the dump was truncated"]), FINAL, {"file rows": 9})
+    reporter.update(Counters(consumed=500, written=498), {"import requests": 4})
+    reporter.end(Outcome(notes=["the dump was truncated"]), FINAL, {"import requests": 9})
     text = output(reporter)
     for expected in ("dump x.ratsdb", "JSON lines in out.jsonl", "rats-search 2.x content types", "1,200",
-                     "Import finished", "1,198", "skipped as bad", "invalid infohash", "file rows",
+                     "Import finished", "1,198", "skipped as bad", "invalid infohash", "import requests",
                      "average rate", "the dump was truncated"):
         assert expected in text
     assert "resume with" not in text
@@ -103,11 +103,11 @@ def test_rich_failure_summary():
 def test_rich_live_block_and_close():
     reporter = RichReporter(recording(terminal=True))
     reporter.begin(INFO)
-    reporter.update(Counters(consumed=600, written=598, bad=1, invalid=1, last_id=42), {"file rows": 9})
+    reporter.update(Counters(consumed=600, written=598, bad=1, invalid=1, last_id=42), {"import requests": 9})
     assert reporter.live is not None
     reporter.live.refresh()
     text = output(reporter)
-    for expected in ("Importing", "50%", "600 / 1,200", "written 598", "skipped as bad 1", "file rows 9",
+    for expected in ("Importing", "50%", "600 / 1,200", "written 598", "skipped as bad 1", "import requests 9",
                      "last row id 42"):
         assert expected in text
     reporter.close()
@@ -147,7 +147,7 @@ def test_rich_log_handler_writes_to_the_display_console():
 
 @pytest.mark.parametrize("argv,stderr_tty,stdout_tty,expected", [
     (["x", "--output", "o.jsonl"], True, True, True),
-    (["x", "--postgres", "dsn"], True, False, True),
+    (["x", "--bitmagnet"], True, False, True),
     (["x"], True, False, True),             # JSON lines piped away, display on stderr
     (["x"], True, True, False),             # JSON lines on the same terminal
     (["x", "--output", "o.jsonl"], False, True, False),

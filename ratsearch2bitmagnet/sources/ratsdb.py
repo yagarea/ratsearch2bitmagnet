@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from datetime import datetime
 from typing import IO
 
-from ..model import SCHEMA_V2, V2_CATEGORY_IDS, V2_TYPE_IDS, File, Torrent, clean_text, private_from_info, to_int
+from ..model import SCHEMA_V2, V2_CATEGORY_IDS, V2_TYPE_IDS, Torrent, clean_text, private_from_info, to_int
 
 log = logging.getLogger(__name__)
 
@@ -30,27 +30,15 @@ RATSDB_FORMAT_VERSION = 1
 
 def torrent_from_dump_json(obj: dict, fallback_added: int) -> Torrent:
     hash_ = clean_text(obj.get("hash") or obj.get("info_hash") or "").lower()
-    file_list = [File(clean_text(f.get("path")), to_int(f.get("size")))
-                 for f in (obj.get("files_list") or obj.get("filesList") or [])
-                 if isinstance(f, dict)]
-    files = to_int(obj.get("files"))
-    if files == 0 and file_list:
-        files = len(file_list)
     added_ms = to_int(obj.get("added"))
-    checked_ms = to_int(obj.get("trackersChecked"))
     return Torrent(
         hash=hash_,
         name=clean_text(obj.get("name")),
         size=to_int(obj.get("size")),
-        files=files,
         added=added_ms // 1000 if added_ms > 0 else fallback_added,
         content_type=V2_TYPE_IDS.get(str(obj.get("contentType") or ""), 0),
         content_category=V2_CATEGORY_IDS.get(str(obj.get("contentCategory") or ""), 0),
-        seeders=to_int(obj.get("seeders")),
-        leechers=to_int(obj.get("leechers")),
-        scraped=checked_ms > 0,
         private=private_from_info(obj.get("info")),
-        file_list=file_list,
     )
 
 
